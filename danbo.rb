@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
-require 'userstream'
 require 'pp'
+require 'websocket_client'
+require 'json'
 
 class Danbo
   DEV = '/dev/cu.usbserial-A800eL64'
@@ -27,35 +28,49 @@ class Danbo
   def not_blink; @blink = false; self end
 end
 
-def twitter(&f)
-  consumer_key    = '5EDJM7BXRYkFGL5pzxDMqw'
-  consumer_secret = 'ogKYO6X93oJzIHFbOCjbf8ZzQmKXCFMXEre4hNA'
-  access_key      = '269769810-cSEEtgBfzYWlqa1pWSMQtYg9uDpwxWEboBAWVAw1'
-  access_secret   = 'BdSsx5U8aI58fhveiWiwAvxsFPjvSVODsn5h7C0IBI'
+# monkey patch
+class WebSocketClient::Protocol::Ietf00
+  attr_reader :source
+  attr_reader :sink
 
-  consumer =
-    OAuth::Consumer.new(consumer_key, consumer_secret,
-                        :site => 'https://userstream.twitter.com/')
-  access_token =
-    OAuth::AccessToken.new(consumer,
-                           access_key, access_secret)
-  userstream = Userstream.new(consumer, access_token)
-  userstream.user(&f)
+  def perform_http_prolog(uri)
+    key1, key2, key3, solution = generate_keys()
+
+    sink.write_line "GET #{uri.path} HTTP/1.1"
+    sink.write_line "Host: #{uri.host}"
+    sink.write_line "Connection: upgrade"
+    sink.write_line "Upgrade: websocket"
+    sink.write_line "Origin: http://#{uri.host}/"
+    sink.write_line "Sec-WebSocket-Key1: #{key1}"
+    sink.write_line "Sec-WebSocket-Key2: #{key2}"
+    sink.write_line ""
+    sink.write_line key3
+    sink.flush
+
+    while ( ! source.eof? )
+      line = source.getline
+      break if ( line.strip == '' )
+    end
+
+    source.getbytes( 16 )
+  end
 end
 
 if __FILE__ == $0 then
   danbo = Danbo.new
-  twitter do |status|
-    if status.user.screen_name == '_puke' then
-      puts status
-      case status.text
-      when /開始/
-        danbo.blue.blink
-      when /成功/
-        danbo.green.not_blink
-      when /失敗/
-        danbo.red.not_blink
+
+  WebSocketClient.create('ws://dev.codefirst.org:8081/jenkins') do|ws|
+    ws.on_message do|m|
+      obj = JSON.parse m
+      case obj['result']
+      when 'FAILURE'
+        danbo.red
+      when 'SUCCESS'
+        danbo.green
       end
+    end
+    ws.connect do|c|
+      c.wait_for_disconnect
     end
   end
 end
